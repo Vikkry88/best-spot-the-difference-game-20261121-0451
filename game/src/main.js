@@ -1,28 +1,23 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The game
-// moves between four screens: title, play, paused and game over.
-//
-// ?seed=N fixes the falling pattern. ?shot=start|play|end (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, LIVES, STEP } from './config.js';
-import { createRandom } from './random.js';
-import { createWorld, EVENT_HIT, EVENT_OVER } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
-import { stageShot } from './shots.js';
+// Twin Harbor — Spot the Difference: boot, loop, and wiring.
+// ?shot=play|level2|win|title stages a screenshot scene and sets window.__shotReady.
+// window.__spot exposes the world plus logical-coordinate helpers for automated playtests.
 
-/** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
-const MAX_FRAME = 0.25;
+import { BEST_KEY, PANEL_H, PANEL_LEFT_X, PANEL_RIGHT_X, PANEL_W, PANEL_Y, SCREEN_CLEAR, SCREEN_COMPLETE, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './config.js';
+import { createWorld } from './world.js';
+import { buttonsFor, createRenderer } from './render.js';
+import { createInput } from './input.js';
+import { createAudio } from './audio.js';
+import { stageShot } from './shots.js';
+import { LEVELS } from './scenes.js';
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
-const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
 
 const canvas = document.getElementById('game');
 const status = document.getElementById('status');
-const world = createWorld(createRandom(seed));
+const world = createWorld();
 const renderer = createRenderer(canvas);
+const audio = createAudio();
 
 function readBest() {
   try {
@@ -40,11 +35,134 @@ function saveBest(value) {
   }
 }
 
+function announce(message) {
+  status.textContent = message;
+}
+
+function panelAt(x, y) {
+  if (y < PANEL_Y || y > PANEL_Y + PANEL_H) return null;
+  if (x >= PANEL_LEFT_X && x <= PANEL_LEFT_X + PANEL_W) return { panel: 0, sx: x - PANEL_LEFT_X, sy: y - PANEL_Y };
+  if (x >= PANEL_RIGHT_X && x <= PANEL_RIGHT_X + PANEL_W) return { panel: 1, sx: x - PANEL_RIGHT_X, sy: y - PANEL_Y };
+  return null;
+}
+
+function handleClick(x, y, nowMs) {
+  const { state } = world;
+  state.crosshair = null; // a mouse click takes over from keyboard play
+  for (const btn of buttonsFor(state)) {
+    if (x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) {
+      if (btn.id === 'hint') {
+        if (world.useHint(nowMs)) audio.hint();
+      } else if (btn.id === 'start' || btn.id === 'again') {
+        world.startGame();
+        audio.click();
+        announce('Playing. Find 8 differences.');
+      } else if (btn.id === 'next') {
+        world.nextLevel();
+        audio.click();
+        announce(`Level ${state.levelIndex + 1}. Find 8 differences.`);
+      }
+      return;
+    }
+  }
+  if (state.screen === SCREEN_PAUSED) {
+    world.togglePause();
+    return;
+  }
+  if (state.screen !== SCREEN_PLAY) return;
+  const hit = panelAt(x, y);
+  if (!hit) return;
+  const result = world.clickScene(hit.panel, hit.sx, hit.sy, nowMs);
+  if (result === 'found') {
+    audio.found();
+    announce(`${state.lastFoundLabel}. ${world.remaining()} remain.`);
+    if (state.screen === SCREEN_CLEAR) audio.levelClear();
+    if (state.screen === SCREEN_COMPLETE) {
+      audio.win();
+      if (state.score > readBest()) saveBest(state.score);
+    }
+  } else if (result === 'wrong') {
+    audio.wrong();
+    announce('Not a difference. Plus 5 seconds.');
+  }
+}
+
+function handleKey(key) {
+  const { state } = world;
+  if (key === 'm') {
+    audio.toggleMute();
+    announce(audio.muted ? 'Sound off.' : 'Sound on.');
+    return;
+  }
+  if (key === 'p' || key === 'escape') {
+    world.togglePause();
+    return;
+  }
+  if (key === 'h') {
+    if (world.useHint(performance.now())) audio.hint();
+    return;
+  }
+  if (key === 'r' && state.screen === SCREEN_PLAY) {
+    world.startLevel(state.levelIndex);
+    return;
+  }
+  // Keyboard-only play: arrows or WASD move a crosshair over the pictures, Enter
+  // clicks where it sits. The crosshair appears on the first arrow press, centred
+  // on the right picture, and stays until the next mouse click.
+  const STEP = 24;
+  const moves = {
+    arrowup: [0, -STEP], w: [0, -STEP],
+    arrowdown: [0, STEP], s: [0, STEP],
+    arrowleft: [-STEP, 0], a: [-STEP, 0],
+    arrowright: [STEP, 0], d: [STEP, 0],
+  };
+  if (moves[key] && state.screen === SCREEN_PLAY) {
+    if (!state.crosshair) state.crosshair = { x: PANEL_RIGHT_X + PANEL_W / 2, y: PANEL_Y + PANEL_H / 2 };
+    state.crosshair.x = Math.max(0, Math.min(1280, state.crosshair.x + moves[key][0]));
+    state.crosshair.y = Math.max(0, Math.min(720, state.crosshair.y + moves[key][1]));
+    return;
+  }
+  if (key === 'enter' && state.screen === SCREEN_PLAY && state.crosshair) {
+    const { x, y } = state.crosshair;
+    handleClick(x, y, performance.now());
+    state.crosshair = { x, y }; // handleClick clears it for the mouse; keyboard play keeps it
+    return;
+  }
+  if (key === ' ' || key === 'enter') {
+    if (state.screen === SCREEN_TITLE || state.screen === SCREEN_COMPLETE) {
+      world.startGame();
+      audio.click();
+    } else if (state.screen === SCREEN_CLEAR) {
+      world.nextLevel();
+      audio.click();
+    } else if (state.screen === SCREEN_PAUSED) {
+      world.togglePause();
+    }
+  }
+}
+
+// Playtest / automation hook: logical (1280x720) coordinates, same space as clicks.
+window.__spot = {
+  world,
+  levels: LEVELS,
+  clickLogical(x, y) {
+    handleClick(x, y, performance.now());
+  },
+  diffCenters() {
+    return LEVELS[world.state.levelIndex].diffs.map((diff) => ({
+      id: diff.id,
+      left: { x: PANEL_LEFT_X + diff.x, y: PANEL_Y + diff.y },
+      right: { x: PANEL_RIGHT_X + diff.x, y: PANEL_Y + diff.y },
+      found: world.state.found.has(diff.id),
+    }));
+  },
+};
+
 function runShot(name) {
   const scene = stageShot(name, world);
   let painted = 0;
   function paint() {
-    renderer.draw(world.state, scene.screen, scene.best);
+    renderer.draw(world.state, scene.best, false, 1200);
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
     else window.__shotReady = true;
@@ -54,79 +172,27 @@ function runShot(name) {
 
 function runGame() {
   const input = createInput(canvas);
-  let screen = SCREEN_TITLE;
   let best = readBest();
-  let accumulator = 0;
   let last = performance.now();
-
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
-  function announce(message) {
-    status.textContent = message;
-  }
-
-  function startGame() {
-    world.reset();
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    announce(`Playing. ${LIVES} lives.`);
-  }
-
-  function endGame() {
-    screen = SCREEN_OVER;
-    if (world.state.score > best) {
-      best = world.state.score;
-      saveBest(best);
-    }
-    announce(`Game over. Score ${world.state.score}. Best ${best}.`);
-  }
-
-  function handleActions() {
-    const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
-    else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
-      screen = SCREEN_PLAY;
-      announce('Playing.');
-    }
-  }
-
-  function step() {
-    if (screen === SCREEN_TITLE) {
-      world.step(STEP, 0, true);
-      return;
-    }
-    const events = world.step(STEP, input.direction(), false);
-    if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_HIT) announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
-  }
 
   function frame(now) {
     requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
+    const dt = Math.min((now - last) / 1000, 0.25);
     last = now;
-    handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
-        accumulator -= STEP;
-      }
-    } else {
-      accumulator = 0;
+    for (const click of input.takeClicks()) handleClick(click.x, click.y, now);
+    for (const key of input.takeKeys()) handleKey(key);
+    world.tick(dt);
+    if (world.state.screen === SCREEN_COMPLETE && world.state.score > best) {
+      best = world.state.score;
     }
-    renderer.draw(world.state, screen, best);
+    renderer.draw(world.state, best, audio.muted, now);
   }
 
-  // Leaving the tab pauses a running game rather than letting blocks fall unseen.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    }
+    if (document.hidden && world.state.screen === SCREEN_PLAY) world.togglePause();
   });
 
-  announce('Block Dodger. Press Space or click to start.');
+  announce('Twin Harbor. Press Space or click Start to play.');
   requestAnimationFrame(frame);
 }
 

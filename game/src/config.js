@@ -1,61 +1,27 @@
-// Every tuning number and colour in one place. The playfield is a fixed 1280x720 logical area;
-// the renderer scales it to the window, so no rule below depends on the screen size.
+// Twin Harbor — Spot the Difference: shared constants.
+// The whole game is drawn on one 1280x720 logical canvas, letterboxed to the window.
+// Each scene panel is PANEL_W x PANEL_H in scene coordinates; differences are placed
+// in those coordinates and hit-tested against them, so clicks work at any window size.
 
-export const FIELD = { width: 1280, height: 720, groundY: 664 };
+export const VIEW_W = 1280;
+export const VIEW_H = 720;
 
-/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
-export const STEP = 1 / 60;
+export const PANEL_W = 560;
+export const PANEL_H = 440;
+export const PANEL_Y = 150;
+export const PANEL_LEFT_X = 48;
+export const PANEL_RIGHT_X = 672;
 
-export const PLAYER = {
-  width: 72,
-  height: 24,
-  speed: 560,
-  invulnerable: 1.5,
-};
+export const POINTS_PER_FIND = 100;
+export const WRONG_TIME_PENALTY = 5; // seconds added to the clock on a wrong click
+export const HINTS_PER_LEVEL = 3;
+export const HINT_SCORE_COST = 30;
+export const HINT_PULSE_MS = 1600;
 
-export const LIVES = 3;
+export const BEST_KEY = 'twin-harbor-best-v1';
 
-export const BLOCK = {
-  minWidth: 40,
-  maxWidth: 110,
-  height: 36,
-  speed: 240,
-  speedPerLevel: 30,
-  speedJitter: 90,
-  interval: 0.55,
-  intervalScale: 0.88,
-  minInterval: 0.14,
-  dodgePoints: 1,
-};
-
-export const COIN = {
-  size: 24,
-  speed: 190,
-  speedPerLevel: 14,
-  interval: 1.4,
-  intervalJitter: 0.8,
-  points: 10,
-};
-
-/** Seconds of play per level, and the last level: speeds and spawn rates stop growing there. */
-export const LEVEL = { seconds: 12, max: 12 };
-
-/** How many falling things can exist at once; the pool is allocated once, at boot. */
-export const POOL_SIZE = 64;
-
-export const PALETTE = {
-  backdrop: '#11141b',
-  sky: '#1b1f2a',
-  ground: '#2a3040',
-  player: '#4fc3f7',
-  block: '#e5534b',
-  coin: '#f2c94c',
-  panel: '#252b38',
-  text: '#eef1f5',
-  muted: '#8b93a3',
-};
-
-export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-
-/** Where the best score is kept between visits (this browser only). */
-export const BEST_KEY = 'block-dodger.best';
+export const SCREEN_TITLE = 'title';
+export const SCREEN_PLAY = 'play';
+export const SCREEN_PAUSED = 'paused';
+export const SCREEN_CLEAR = 'clear';
+export const SCREEN_COMPLETE = 'complete';

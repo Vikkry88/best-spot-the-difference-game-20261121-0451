@@ -1,141 +1,281 @@
-// Drawing only: the world's state and the current screen in, pixels out. The 1280x720 playfield
-// is scaled to fit the window and centred, the margin filled with the backdrop colour. Flat
-// rectangles and circles, canvas text for the HUD and the panels. Text that holds a number is
-// rebuilt only when the number changes, so a frame allocates nothing.
-import { FIELD, FONT, LIVES, PALETTE } from './config.js';
-import { KIND_COIN } from './world.js';
+// Drawing only: world state in, pixels out. The 1280x720 logical view is letterboxed
+// to the window. Both scene panels are drawn from scenes.js — the left plain, the right
+// with every difference applied — then found-difference rings are painted on BOTH
+// panels, with the found/remaining counter, score and clock in the header.
 
-export const SCREEN_TITLE = 'title';
-export const SCREEN_PLAY = 'play';
-export const SCREEN_PAUSED = 'paused';
-export const SCREEN_OVER = 'over';
+import {
+  PANEL_H,
+  PANEL_LEFT_X,
+  PANEL_RIGHT_X,
+  PANEL_W,
+  PANEL_Y,
+  SCREEN_CLEAR,
+  SCREEN_COMPLETE,
+  SCREEN_PAUSED,
+  SCREEN_PLAY,
+  SCREEN_TITLE,
+  VIEW_H,
+  VIEW_W,
+} from './config.js';
+import { LEVELS, drawScene } from './scenes.js';
+import { createRandom } from './random.js';
 
-/** The panel's width; its height grows with its lines: room for the title, the lines and the prompt. */
-const PANEL = { width: 600, top: 134, line: 34, bottom: 70 };
-const LIFE_SIZE = 20;
-const LIFE_GAP = 8;
+const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 
-function cachedLabel(prefix) {
-  let value = -1;
-  let text = '';
-  return function label(next) {
-    if (next !== value) {
-      value = next;
-      text = prefix + next;
-    }
-    return text;
-  };
+export const HINT_BTN = { id: 'hint', x: 1046, y: 86, w: 186, h: 44 };
+export const START_BTN = { id: 'start', x: 490, y: 500, w: 300, h: 64 };
+export const NEXT_BTN = { id: 'next', x: 490, y: 470, w: 300, h: 64 };
+export const AGAIN_BTN = { id: 'again', x: 490, y: 500, w: 300, h: 64 };
+
+export function buttonsFor(state) {
+  if (state.screen === SCREEN_PLAY) return [HINT_BTN];
+  if (state.screen === SCREEN_TITLE) return [START_BTN];
+  if (state.screen === SCREEN_CLEAR) return [NEXT_BTN];
+  if (state.screen === SCREEN_COMPLETE) return [AGAIN_BTN];
+  return [];
+}
+
+function fmtTime(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 export function createRenderer(canvas) {
-  const context = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d');
   const view = { scale: 1, x: 0, y: 0 };
-  const scoreLabel = cachedLabel('Score ');
-  const levelLabel = cachedLabel('Level ');
-  const finalLabel = cachedLabel('Score ');
-  const bestLabel = cachedLabel('Best ');
+  const decorRng = createRandom(20261121);
 
   function resize() {
     const ratio = window.devicePixelRatio || 1;
-    const width = Math.round(window.innerWidth * ratio);
-    const height = Math.round(window.innerHeight * ratio);
-    canvas.width = width;
-    canvas.height = height;
-    view.scale = Math.min(width / FIELD.width, height / FIELD.height);
-    view.x = (width - FIELD.width * view.scale) / 2;
-    view.y = (height - FIELD.height * view.scale) / 2;
+    canvas.width = Math.round(window.innerWidth * ratio);
+    canvas.height = Math.round(window.innerHeight * ratio);
+    view.scale = Math.min(canvas.width / VIEW_W, canvas.height / VIEW_H);
+    view.x = (canvas.width - VIEW_W * view.scale) / 2;
+    view.y = (canvas.height - VIEW_H * view.scale) / 2;
   }
 
-  const fonts = new Map();
-  function text(value, x, y, size, color, align) {
-    if (!fonts.has(size)) fonts.set(size, `${size}px ${FONT}`);
-    context.font = fonts.get(size);
-    context.fillStyle = color;
-    context.textAlign = align;
-    context.fillText(value, x, y);
+  function text(value, x, y, size, color, align = 'left', weight = '600') {
+    ctx.font = `${weight} ${size}px ${FONT}`;
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(value, x, y);
   }
 
-  function drawField(state) {
-    context.fillStyle = PALETTE.sky;
-    context.fillRect(0, 0, FIELD.width, FIELD.height);
-    context.fillStyle = PALETTE.ground;
-    context.fillRect(0, FIELD.groundY, FIELD.width, FIELD.height - FIELD.groundY);
+  function roundRect(x, y, w, h, r, fill) {
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+    ctx.fill();
+  }
 
-    const items = state.items;
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      if (!item.active) continue;
-      if (item.kind === KIND_COIN) {
-        context.fillStyle = PALETTE.coin;
-        context.beginPath();
-        context.arc(item.x + item.width / 2, item.y + item.height / 2, item.width / 2, 0, Math.PI * 2);
-        context.fill();
-      } else {
-        context.fillStyle = PALETTE.block;
-        context.fillRect(item.x, item.y, item.width, item.height);
+  function drawButton(btn, label, enabled = true) {
+    roundRect(btn.x, btn.y, btn.w, btn.h, 12, enabled ? '#f59e0b' : '#475569');
+    ctx.strokeStyle = enabled ? '#fde68a' : '#64748b';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(btn.x, btn.y, btn.w, btn.h, 12);
+    ctx.stroke();
+    text(label, btn.x + btn.w / 2, btn.y + btn.h / 2 + 1, btn.h > 50 ? 26 : 20, '#1c1005', 'center', '800');
+  }
+
+  function drawPanel(state, panelX, changed, nowMs) {
+    ctx.save();
+    ctx.translate(panelX, PANEL_Y);
+    // Fresh decor RNG per panel so both pictures share identical decoration.
+    drawScene(ctx, state.levelIndex, changed, createRandom(20261121), nowMs);
+    ctx.restore();
+
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(panelX, PANEL_Y, PANEL_W, PANEL_H);
+
+    const diffs = LEVELS[state.levelIndex].diffs;
+    for (const diff of diffs) {
+      const cx = panelX + diff.x;
+      const cy = PANEL_Y + diff.y;
+      if (state.found.has(diff.id)) {
+        ctx.strokeStyle = '#22c55e';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, diff.r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(34,197,94,0.35)';
+        ctx.lineWidth = 10;
+        ctx.beginPath();
+        ctx.arc(cx, cy, diff.r + 4, 0, Math.PI * 2);
+        ctx.stroke();
+        // check badge
+        ctx.fillStyle = '#22c55e';
+        ctx.beginPath();
+        ctx.arc(cx + diff.r * 0.72, cy - diff.r * 0.72, 11, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(cx + diff.r * 0.72 - 5, cy - diff.r * 0.72);
+        ctx.lineTo(cx + diff.r * 0.72 - 1, cy - diff.r * 0.72 + 4);
+        ctx.lineTo(cx + diff.r * 0.72 + 5, cy - diff.r * 0.72 - 4);
+        ctx.stroke();
+      } else if (state.hintId === diff.id && nowMs < state.hintUntil) {
+        const phase = (nowMs % 520) / 520;
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, diff.r * (0.55 + phase * 0.6), 0, Math.PI * 2);
+        ctx.stroke();
       }
     }
 
-    const player = state.player;
-    // Blink while invulnerable after a hit: hidden on every other tenth of a second.
-    if (player.invulnerable === 0 || Math.floor(player.invulnerable * 10) % 2 === 1) {
-      context.fillStyle = PALETTE.player;
-      context.fillRect(player.x, player.y, player.width, player.height);
+    if (state.wrongFlash && nowMs < state.wrongFlash.until) {
+      const panel = panelX === PANEL_LEFT_X ? 0 : 1;
+      if (state.wrongFlash.panel === panel) {
+        const fx = panelX + state.wrongFlash.x;
+        const fy = PANEL_Y + state.wrongFlash.y;
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.moveTo(fx - 13, fy - 13);
+        ctx.lineTo(fx + 13, fy + 13);
+        ctx.moveTo(fx + 13, fy - 13);
+        ctx.lineTo(fx - 13, fy + 13);
+        ctx.stroke();
+      }
     }
   }
 
-  function drawHud(state) {
-    context.textBaseline = 'top';
-    text(scoreLabel(state.score), 24, 20, 28, PALETTE.text, 'left');
-    text(levelLabel(state.level), FIELD.width / 2, 20, 28, PALETTE.text, 'center');
-    const firstLife = FIELD.width - 24 - LIVES * (LIFE_SIZE + LIFE_GAP) + LIFE_GAP;
-    text('Lives', firstLife - 12, 20, 28, PALETTE.text, 'right');
-    for (let life = 0; life < LIVES; life += 1) {
-      context.fillStyle = life < state.lives ? PALETTE.player : PALETTE.ground;
-      context.fillRect(firstLife + life * (LIFE_SIZE + LIFE_GAP), 24, LIFE_SIZE, LIFE_SIZE);
+  function drawHeader(state, muted) {
+    const level = LEVELS[state.levelIndex];
+    const total = level.diffs.length;
+    const found = state.found.size;
+    const remain = total - found;
+
+    roundRect(24, 16, VIEW_W - 48, 118, 16, '#16213c');
+    text('TWIN HARBOR', 48, 44, 30, '#fde68a', 'left', '900');
+    text(`Level ${state.levelIndex + 1} of ${LEVELS.length} · ${level.name}`, 48, 78, 19, '#cbd5e1', 'left');
+    text(level.tagline, 48, 104, 16, '#94a3b8', 'left', '400');
+
+    // The counter the whole game turns on: found vs remaining, impossible to miss.
+    roundRect(430, 30, 420, 58, 14, '#0b1220');
+    text(`Found ${found} of ${total}  ·  ${remain} remain`, 640, 60, 27, '#ffffff', 'center', '900');
+    for (let i = 0; i < total; i++) {
+      ctx.fillStyle = i < found ? '#22c55e' : '#334155';
+      ctx.beginPath();
+      ctx.arc(640 - ((total - 1) * 22) / 2 + i * 22, 104, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    text(`Score ${state.score}`, 1010, 44, 24, '#ffffff', 'right', '800');
+    text(`Time ${fmtTime(state.elapsed)}`, 1010, 76, 20, '#cbd5e1', 'right');
+    text(muted ? 'Sound: OFF (M)' : 'Sound: ON (M)', 1010, 104, 15, '#94a3b8', 'right', '400');
+    if (state.screen === SCREEN_PLAY) {
+      drawButton(HINT_BTN, `HINT (${state.hintsLeft})`, state.hintsLeft > 0);
     }
   }
 
-  function drawPanel(title, lines, prompt) {
-    const height = PANEL.top + lines.length * PANEL.line + PANEL.bottom;
-    const x = (FIELD.width - PANEL.width) / 2;
-    const y = (FIELD.height - height) / 2;
-    context.fillStyle = PALETTE.panel;
-    context.fillRect(x, y, PANEL.width, height);
-    context.textBaseline = 'alphabetic';
-    text(title, FIELD.width / 2, y + 78, 48, PALETTE.text, 'center');
-    for (let index = 0; index < lines.length; index += 1) {
-      text(lines[index], FIELD.width / 2, y + PANEL.top + index * PANEL.line, 22, PALETTE.muted, 'center');
-    }
-    text(prompt, FIELD.width / 2, y + height - 40, 24, PALETTE.coin, 'center');
+  function drawOverlayPanel(title, lines, btn, btnLabel) {
+    ctx.fillStyle = 'rgba(5,10,24,0.72)';
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    roundRect(330, 150, 620, 420, 20, '#16213c');
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(330, 150, 620, 420, 20);
+    ctx.stroke();
+    text(title, 640, 215, 44, '#fde68a', 'center', '900');
+    lines.forEach((line, i) => {
+      text(line, 640, 272 + i * 36, 21, '#e2e8f0', 'center', i === 0 ? '700' : '400');
+    });
+    if (btn) drawButton(btn, btnLabel);
   }
 
-  const TITLE_LINES = ['Dodge the red blocks. Catch the gold coins.', 'Move with ← → or A D.  Pause with P.', ''];
-  const PAUSED_LINES = ['The blocks will wait for you.'];
-  const OVER_LINES = ['', ''];
+  function draw(state, best, muted, nowMs) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#0b1220';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
 
-  /** Paint one frame: the field, then the HUD or a panel for the screen the game is on. */
-  function draw(state, screen, best) {
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.fillStyle = PALETTE.backdrop;
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
-    drawField(state);
-    if (screen === SCREEN_TITLE) {
-      TITLE_LINES[2] = bestLabel(best);
-      drawPanel('Block Dodger', TITLE_LINES, 'Press Space or click to start');
-      return;
+    let shakeX = 0;
+    if (nowMs < state.shakeUntil) shakeX = Math.sin(nowMs / 18) * 6;
+    ctx.translate(shakeX, 0);
+
+    drawHeader(state, muted);
+    const allDiffs = new Set(LEVELS[state.levelIndex].diffs.map((diff) => diff.id));
+    drawPanel(state, PANEL_LEFT_X, new Set(), nowMs);
+    drawPanel(state, PANEL_RIGHT_X, allDiffs, nowMs);
+    text('ORIGINAL', PANEL_LEFT_X + PANEL_W / 2, PANEL_Y - 14, 17, '#94a3b8', 'center', '800');
+    text('SPOT THE CHANGES', PANEL_RIGHT_X + PANEL_W / 2, PANEL_Y - 14, 17, '#fde68a', 'center', '800');
+
+    if (state.lastFoundLabel && state.screen === SCREEN_PLAY) {
+      text(`✓ ${state.lastFoundLabel}`, 640, PANEL_Y + PANEL_H + 34, 20, '#4ade80', 'center', '700');
     }
-    drawHud(state);
-    if (screen === SCREEN_PAUSED) drawPanel('Paused', PAUSED_LINES, 'Press P to resume');
-    else if (screen === SCREEN_OVER) {
-      OVER_LINES[0] = finalLabel(state.score);
-      OVER_LINES[1] = bestLabel(best);
-      drawPanel('Game over', OVER_LINES, 'Press Space or click to play again');
+    if (state.crosshair && state.screen === SCREEN_PLAY) {
+      const { x, y } = state.crosshair;
+      ctx.strokeStyle = '#fde047';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(x, y, 16, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - 24, y);
+      ctx.lineTo(x - 8, y);
+      ctx.moveTo(x + 8, y);
+      ctx.lineTo(x + 24, y);
+      ctx.moveTo(x, y - 24);
+      ctx.lineTo(x, y - 8);
+      ctx.moveTo(x, y + 8);
+      ctx.lineTo(x, y + 24);
+      ctx.stroke();
+    }
+    text('Click a difference in either picture · Arrows + Enter also work · H = hint · P = pause · M = mute · Wrong click: +5s', 640, VIEW_H - 26, 16, '#64748b', 'center', '400');
+
+    if (state.screen === SCREEN_TITLE) {
+      drawOverlayPanel(
+        'TWIN HARBOR',
+        [
+          'Spot the Difference',
+          'Two pictures look the same — but they are not.',
+          'Find all 8 differences in each scene. Click either picture.',
+          'Wrong clicks add 5 seconds. Hints cost 30 points.',
+          '3 scenes: Harbor Dawn · Market Noon · Night Fair',
+          best > 0 ? `Best score: ${best}` : 'No best score yet — set one!',
+        ],
+        START_BTN,
+        '▶  START',
+      );
+    } else if (state.screen === SCREEN_CLEAR) {
+      drawOverlayPanel(
+        'LEVEL COMPLETE!',
+        [
+          `${LEVELS[state.levelIndex].name} — all differences found`,
+          `Time bonus: +${state.levelBonus}`,
+          `Score so far: ${state.score}`,
+          `Time so far: ${fmtTime(state.elapsed)} · Mistakes: ${state.mistakes}`,
+          `Next: ${LEVELS[state.levelIndex + 1].name}`,
+        ],
+        NEXT_BTN,
+        'NEXT SCENE →',
+      );
+    } else if (state.screen === SCREEN_COMPLETE) {
+      drawOverlayPanel(
+        '🏆 YOU FOUND THEM ALL!',
+        [
+          'Every difference in all 3 scenes — sharp eyes!',
+          `Final score: ${state.score}`,
+          `Total time: ${fmtTime(state.elapsed)} · Mistakes: ${state.mistakes}`,
+          best > 0 ? `Best score: ${best}` : '',
+          'Thanks for playing Twin Harbor.',
+        ],
+        AGAIN_BTN,
+        '↻  PLAY AGAIN',
+      );
+    } else if (state.screen === SCREEN_PAUSED) {
+      drawOverlayPanel('PAUSED', ['Take your time.', 'Press P or click to keep hunting.'], null, '');
     }
   }
 
   resize();
   window.addEventListener('resize', resize);
+  void decorRng;
   return { draw };
 }

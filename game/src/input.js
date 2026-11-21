@@ -1,53 +1,46 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// Mouse + keyboard input. Mouse positions are converted from window pixels into the
+// game's 1280x720 logical coordinates using the same letterbox transform the renderer
+// uses, so a click lands exactly where the player sees the picture.
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+import { VIEW_H, VIEW_W } from './config.js';
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+export function viewTransform(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const scale = Math.min(rect.width / VIEW_W, rect.height / VIEW_H);
+  const offsetX = (rect.width - VIEW_W * scale) / 2;
+  const offsetY = (rect.height - VIEW_H * scale) / 2;
+  return { rect, scale, offsetX, offsetY };
+}
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+export function toLogical(canvas, clientX, clientY) {
+  const { rect, scale, offsetX, offsetY } = viewTransform(canvas);
+  return {
+    x: (clientX - rect.left - offsetX) / scale,
+    y: (clientY - rect.top - offsetY) / scale,
+  };
+}
+
+export function createInput(canvas) {
+  const clicks = [];
+  const keys = [];
+
+  canvas.addEventListener('pointerdown', (event) => {
+    const p = toLogical(canvas, event.clientX, event.clientY);
+    clicks.push(p);
+  });
 
   window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
+    if (event.repeat) return;
+    keys.push(event.key.toLowerCase());
+    if (event.key === ' ') event.preventDefault();
   });
 
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
+    takeClicks() {
+      return clicks.splice(0, clicks.length);
     },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+    takeKeys() {
+      return keys.splice(0, keys.length);
     },
   };
 }

@@ -1,18 +1,15 @@
-// A working best-game-01 entry (Node 22, standard library only): the game is this directory's
-// game/ folder, plain static files a desktop browser loads offline (game/index.html and its ES
-// modules, no library and no network request), and the program hands it in. It copies game/ and
-// screenshots/ from beside this file to /output and writes /output/dossier.json, the summary the
-// judge reads, with the vendored make.fun library. A starting point, not a winner: Block Dodger, a
-// plain 2D canvas game where a paddle dodges falling blocks and catches coins, with a title screen,
-// score, lives and levels, game over and restart, flat colours and no sound. Build your own game
-// (any genre, any library you vendor under game/, or none), put your 3 or 4 PNG or JPEG screenshots
-// in screenshots/ (the first by name is the cover) and run it.
+// Twin Harbor — Spot the Difference (make.fun best-spot-the-difference-game-20261121-0451).
+// Node 22, standard library only. The game is this directory's game/ folder: plain static
+// files a desktop browser loads offline (game/index.html plus its ES modules, no library,
+// no network request). This program copies game/ and screenshots/ beside this file to
+// /output and writes /output/dossier.json, the summary the judge reads, with the vendored
+// make.fun library in vendor/makefun-game.ts (unchanged).
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
@@ -24,6 +21,18 @@ mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
 if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+
+// Fail loudly here (rather than in the grader) if the entry is incomplete: the game page
+// must exist and 3-4 screenshots must be present.
+if (!existsSync(join(out, 'game', 'index.html'))) throw new Error('game/index.html is missing');
+const shots = readdirSync(join(out, 'screenshots')).filter((n) => /\.(png|jpe?g)$/i.test(n));
+if (shots.length < 3 || shots.length > 4) throw new Error(`expected 3-4 screenshots, found ${shots.length}`);
+// The scorer refuses any screenshot over 256 KiB; catch an oversized render here,
+// where the fix (re-export at lower JPEG quality) is obvious, not in the grader.
+for (const name of shots) {
+  const bytes = statSync(join(out, 'screenshots', name)).size;
+  if (bytes > 262144) throw new Error(`screenshot ${name} is ${bytes} bytes, over the 262144 allowed`);
+}
 
 // The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
 // scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
@@ -39,3 +48,4 @@ writeFileSync(
     game_path_max_bytes: 1000,
   }),
 );
+console.log(`dossier written: game/ + ${shots.length} screenshots -> ${out}`);

@@ -1,124 +1,125 @@
-// The game's rules and state, with no drawing and no browser in it: the player's paddle, the
-// pool of falling blocks and coins, spawning, collisions, score, lives and level. step() advances
-// one fixed step and returns what happened as bit flags, so the caller can react without the
-// world knowing about screens or sound. Nothing here allocates after createWorld returns.
-import { BLOCK, COIN, FIELD, LEVEL, LIVES, PLAYER, POOL_SIZE } from './config.js';
+// Game rules and state — no drawing, no DOM. The renderer reads `state`; main.js feeds
+// it clicks and keys. A click is tested against the current level's difference zones in
+// scene coordinates, so it works identically on the left (original) and right (changed)
+// panel: finding a difference marks it on both pictures.
 
-export const KIND_BLOCK = 0;
-export const KIND_COIN = 1;
+import {
+  HINT_PULSE_MS,
+  HINT_SCORE_COST,
+  HINTS_PER_LEVEL,
+  POINTS_PER_FIND,
+  SCREEN_CLEAR,
+  SCREEN_COMPLETE,
+  SCREEN_PAUSED,
+  SCREEN_PLAY,
+  SCREEN_TITLE,
+  WRONG_TIME_PENALTY,
+} from './config.js';
+import { LEVELS } from './scenes.js';
 
-export const EVENT_HIT = 1;
-export const EVENT_COIN = 2;
-export const EVENT_OVER = 4;
+export function createWorld() {
+  const state = {
+    screen: SCREEN_TITLE,
+    levelIndex: 0,
+    found: new Set(),
+    score: 0,
+    elapsed: 0, // seconds, whole run (wrong clicks add penalty seconds)
+    levelElapsed: 0, // seconds on the current level
+    mistakes: 0,
+    hintsLeft: HINTS_PER_LEVEL,
+    hintId: null,
+    hintUntil: 0, // ms timestamp (performance.now clock, passed in)
+    wrongFlash: null, // {panel, x, y, until}
+    shakeUntil: 0,
+    lastFoundLabel: '',
+    levelBonus: 0,
+    totalFound: 0,
+    crosshair: null, // {x, y} in logical coords when playing by keyboard, else null
+  };
 
-function overlaps(a, b) {
-  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
-}
-
-export function createWorld(random) {
-  const player = { x: 0, y: FIELD.groundY - PLAYER.height, width: PLAYER.width, height: PLAYER.height, invulnerable: 0 };
-  const items = [];
-  for (let index = 0; index < POOL_SIZE; index += 1) {
-    items.push({ active: false, kind: KIND_BLOCK, x: 0, y: 0, width: 0, height: 0, speed: 0 });
+  function level() {
+    return LEVELS[state.levelIndex];
   }
-  const state = { player, items, score: 0, lives: LIVES, level: 1, elapsed: 0, blockTimer: 0, coinTimer: 0 };
 
-  function reset() {
-    player.x = (FIELD.width - player.width) / 2;
-    player.invulnerable = 0;
-    for (const item of items) item.active = false;
+  function startLevel(index) {
+    state.levelIndex = index;
+    state.found = new Set();
+    state.levelElapsed = 0;
+    state.hintsLeft = HINTS_PER_LEVEL;
+    state.hintId = null;
+    state.wrongFlash = null;
+    state.levelBonus = 0;
+    state.screen = SCREEN_PLAY;
+  }
+
+  function startGame() {
     state.score = 0;
-    state.lives = LIVES;
-    state.level = 1;
     state.elapsed = 0;
-    state.blockTimer = BLOCK.interval;
-    state.coinTimer = COIN.interval;
+    state.mistakes = 0;
+    state.totalFound = 0;
+    startLevel(0);
   }
 
-  function freeItem() {
-    for (let index = 0; index < items.length; index += 1) if (!items[index].active) return items[index];
-    return null;
+  function tick(dtSeconds) {
+    if (state.screen !== SCREEN_PLAY) return;
+    state.elapsed += dtSeconds;
+    state.levelElapsed += dtSeconds;
   }
 
-  function spawnBlock() {
-    const item = freeItem();
-    if (item === null) return;
-    item.active = true;
-    item.kind = KIND_BLOCK;
-    item.width = BLOCK.minWidth + random() * (BLOCK.maxWidth - BLOCK.minWidth);
-    item.height = BLOCK.height;
-    item.x = random() * (FIELD.width - item.width);
-    item.y = -item.height;
-    item.speed = BLOCK.speed + BLOCK.speedPerLevel * (state.level - 1) + random() * BLOCK.speedJitter;
-  }
-
-  function spawnCoin() {
-    const item = freeItem();
-    if (item === null) return;
-    item.active = true;
-    item.kind = KIND_COIN;
-    item.width = COIN.size;
-    item.height = COIN.size;
-    item.x = random() * (FIELD.width - item.width);
-    item.y = -item.height;
-    item.speed = COIN.speed + COIN.speedPerLevel * (state.level - 1);
-  }
-
-  function blockInterval() {
-    return Math.max(BLOCK.minInterval, BLOCK.interval * BLOCK.intervalScale ** (state.level - 1));
-  }
-
-  /**
-   * One fixed step. `direction` is -1, 0 or 1 (left, still, right). With `harmless` set (the title
-   * screen's backdrop) things fall but nothing touches the player and nothing scores.
-   */
-  function step(dt, direction, harmless) {
-    let events = 0;
-    state.elapsed += dt;
-    state.level = Math.min(LEVEL.max, 1 + Math.floor(state.elapsed / LEVEL.seconds));
-
-    player.x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * dt));
-    if (player.invulnerable > 0) player.invulnerable = Math.max(0, player.invulnerable - dt);
-
-    state.blockTimer -= dt;
-    if (state.blockTimer <= 0) {
-      spawnBlock();
-      state.blockTimer += blockInterval();
-    }
-    state.coinTimer -= dt;
-    if (state.coinTimer <= 0) {
-      spawnCoin();
-      state.coinTimer += COIN.interval + random() * COIN.intervalJitter;
-    }
-
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      if (!item.active) continue;
-      item.y += item.speed * dt;
-      if (item.y > FIELD.groundY) {
-        item.active = false;
-        if (item.kind === KIND_BLOCK && !harmless) state.score += BLOCK.dodgePoints;
-        continue;
-      }
-      if (harmless || !overlaps(item, player)) continue;
-      if (item.kind === KIND_COIN) {
-        item.active = false;
-        state.score += COIN.points;
-        events |= EVENT_COIN;
-      } else if (player.invulnerable === 0) {
-        item.active = false;
-        state.lives -= 1;
-        player.invulnerable = PLAYER.invulnerable;
-        events |= EVENT_HIT;
-        if (state.lives === 0) {
-          events |= EVENT_OVER;
-          break;
+  // panel: 0 = left/original, 1 = right/changed. sx, sy in scene coordinates.
+  // Returns 'found' | 'already' | 'wrong'.
+  function clickScene(panel, sx, sy, nowMs) {
+    if (state.screen !== SCREEN_PLAY) return 'wrong';
+    for (const diff of level().diffs) {
+      const dx = sx - diff.x;
+      const dy = sy - diff.y;
+      if (dx * dx + dy * dy <= diff.r * diff.r) {
+        if (state.found.has(diff.id)) return 'already';
+        state.found.add(diff.id);
+        state.totalFound += 1;
+        state.score += POINTS_PER_FIND;
+        state.lastFoundLabel = diff.label;
+        if (state.hintId === diff.id) state.hintId = null;
+        if (state.found.size >= level().diffs.length) {
+          state.levelBonus = Math.max(0, 300 - Math.floor(state.levelElapsed)) * 2;
+          state.score += state.levelBonus;
+          state.screen = state.levelIndex >= LEVELS.length - 1 ? SCREEN_COMPLETE : SCREEN_CLEAR;
         }
+        return 'found';
       }
     }
-    return events;
+    state.mistakes += 1;
+    state.elapsed += WRONG_TIME_PENALTY;
+    state.levelElapsed += WRONG_TIME_PENALTY;
+    state.wrongFlash = { panel, x: sx, y: sy, until: nowMs + 650 };
+    state.shakeUntil = nowMs + 320;
+    return 'wrong';
   }
 
-  reset();
-  return { state, reset, step };
+  function useHint(nowMs) {
+    if (state.screen !== SCREEN_PLAY || state.hintsLeft <= 0) return null;
+    const remaining = level().diffs.filter((diff) => !state.found.has(diff.id));
+    if (remaining.length === 0) return null;
+    const pick = remaining[Math.floor(Math.random() * remaining.length)];
+    state.hintsLeft -= 1;
+    state.score = Math.max(0, state.score - HINT_SCORE_COST);
+    state.hintId = pick.id;
+    state.hintUntil = nowMs + HINT_PULSE_MS;
+    return pick;
+  }
+
+  function nextLevel() {
+    if (state.levelIndex < LEVELS.length - 1) startLevel(state.levelIndex + 1);
+  }
+
+  function togglePause() {
+    if (state.screen === SCREEN_PLAY) state.screen = SCREEN_PAUSED;
+    else if (state.screen === SCREEN_PAUSED) state.screen = SCREEN_PLAY;
+  }
+
+  function remaining() {
+    return level().diffs.length - state.found.size;
+  }
+
+  return { state, level, startGame, startLevel, tick, clickScene, useHint, nextLevel, togglePause, remaining };
 }
